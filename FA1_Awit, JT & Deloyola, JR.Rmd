@@ -1,0 +1,252 @@
+---
+title: "FA1"
+author: "Awit, Julia Theressa and Deloyola, Jhen Reyniel L."
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+```
+
+# Exercises
+
+## Question 1: Minimum Diamond Price
+
+**Use dplyr to answer the following question:**
+
+*What is the minimum diamond price in this dataset? See if you can find the answer in two different ways (i.e. using two different dplyr verbs).*
+
+### Method 1: Using `summarise()` and `min()`
+
+```{r q1_method1}
+# Load the diamonds dataset from ggplot2
+data("diamonds")
+
+# Method 1: Using summarise
+diamonds %>%
+  summarise(minimum_price = min(price))
+```
+
+### Method 2: Using `arrange()` and `slice()`
+
+```{r q1_method2}
+# Method 2: Using arrange and slice
+diamonds %>%
+  arrange(price) %>%
+  slice(1) %>%
+  select(price)
+```
+
+### Visualization: Distribution of Diamond Prices
+
+```{r q1_viz, fig.width=10, fig.height=6}
+# Visualize the price distribution
+ggplot(diamonds, aes(x = price)) +
+  geom_histogram(bins = 50, fill = "pink", color = "black", alpha = 0.7) +
+  geom_vline(xintercept = min(diamonds$price), color = "red", 
+             linetype = "dashed", size = 1) +
+  annotate("text", x = min(diamonds$price) + 1000, y = 5000, 
+           label = paste("Min Price: $", min(diamonds$price)), 
+           color = "red", size = 4) +
+  labs(title = "Distribution of Diamond Prices",
+       subtitle = "Red line indicates minimum price",
+       x = "Price (USD)",
+       y = "Count") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"),
+        plot.subtitle = element_text(hjust = 0.5))
+```
+
+---
+
+## Question 2: Diamonds with Length ≥ 1.5 × Width
+
+*How many diamonds have length at least one and a half times their width?*
+
+```{r q2}
+# Filter diamonds where length (x) >= 1.5 * width (y)
+diamonds_filtered <- diamonds %>%
+  filter(x >= 1.5 * y)
+
+# Count the number of diamonds
+count_diamonds <- nrow(diamonds_filtered)
+
+cat("Number of diamonds with length >= 1.5 × width:", count_diamonds)
+```
+
+### Visualization: Length vs Width Ratio
+
+```{r q2_viz, fig.width=10, fig.height=6}
+# Create a scatter plot showing the relationship
+diamonds %>%
+  mutate(ratio = x / y,
+         meets_criteria = x >= 1.5 * y) %>%
+  filter(x > 0 & y > 0 & x < 10 & y < 10) %>%  # Remove outliers
+  ggplot(aes(x = y, y = x, color = meets_criteria)) +
+  geom_point(alpha = 0.3, size = 1) +
+  geom_abline(slope = 1.5, intercept = 0, color = "red", 
+              linetype = "dashed", size = 1) +
+  scale_color_manual(values = c("FALSE" = "blue", "TRUE" = "darkgreen"),
+                     labels = c("FALSE" = "Below threshold", 
+                                "TRUE" = "Meets criteria (x ≥ 1.5y)")) +
+  labs(title = "Diamond Length vs Width",
+       subtitle = paste("Red line represents x = 1.5y threshold |",
+                       count_diamonds, "diamonds meet the criteria"),
+       x = "Width (y) in mm",
+       y = "Length (x) in mm",
+       color = "Criteria") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"),
+        plot.subtitle = element_text(hjust = 0.5),
+        legend.position = "bottom")
+```
+
+---
+
+## Question 3: Median Carats by Cut
+
+*Among diamonds with colors D, E, F, G, what is the median number of carats for diamonds of each cut?*
+
+```{r q3}
+# Filter for colors D, E, F, G and calculate median carats by cut
+median_carats <- diamonds %>%
+  filter(color %in% c("D", "E", "F", "G")) %>%
+  group_by(cut) %>%
+  summarise(median_carat = median(carat),
+            count = n()) %>%
+  arrange(desc(median_carat))
+
+# Display the results
+print(median_carats)
+```
+
+### Visualization: Median Carats by Cut
+
+```{r q3_viz, fig.width=10, fig.height=6}
+# Create a bar plot
+ggplot(median_carats, aes(x = reorder(cut, median_carat), y = median_carat, 
+                          fill = cut)) +
+  geom_col(show.legend = FALSE, alpha = 0.8) +
+  geom_text(aes(label = round(median_carat, 3)), 
+            vjust = -0.5, size = 4, fontface = "bold") +
+  scale_fill_brewer(palette = "Set2") +
+  labs(title = "Median Carat Weight by Diamond Cut",
+       subtitle = "For diamonds with colors D, E, F, G",
+       x = "Cut Quality",
+       y = "Median Carat Weight") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"),
+        plot.subtitle = element_text(hjust = 0.5),
+        axis.text.x = element_text(angle = 0, hjust = 0.5))
+
+# Box plot for additional context
+diamonds %>%
+  filter(color %in% c("D", "E", "F", "G")) %>%
+  ggplot(aes(x = cut, y = carat, fill = cut)) +
+  geom_boxplot(alpha = 0.7, show.legend = FALSE) +
+  scale_fill_brewer(palette = "Set2") +
+  labs(title = "Distribution of Carat Weights by Cut",
+       subtitle = "For diamonds with colors D, E, F, G (Box Plot)",
+       x = "Cut Quality",
+       y = "Carat Weight") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"),
+        plot.subtitle = element_text(hjust = 0.5))
+```
+
+---
+
+## Question 4: Why Does This Code Fail?
+
+**Exercise 1: Why does this code fail?**
+
+```{r q4_error, error=TRUE}
+# This code will produce an error
+table4a %>%
+  pivot_longer(cols = c(1999, 2000), names_to = "year", values_to = "cases")
+```
+
+**Answer:**
+
+The code fails because `1999` and `2000` are being treated as column positions (numeric indices), not column names. When using bare column names in `pivot_longer()`, R interprets numeric values as positions rather than column names.
+
+**Solution:**
+
+```{r q4_solution}
+# Load table4a from tidyr
+data("table4a")
+
+# Correct way: Use backticks or quotes for numeric column names
+table4a %>%
+  pivot_longer(cols = c(`1999`, `2000`), names_to = "year", values_to = "cases")
+
+# Alternative: Use quotes
+table4a %>%
+  pivot_longer(cols = c("1999", "2000"), names_to = "year", values_to = "cases")
+```
+
+---
+
+## Question 5: Tidy the Tibble
+
+**Exercise 2: Tidy the simple tibble below. Do you need to make it wider or longer? What are the variables?**
+
+```{r q5_original}
+# Create the original tibble
+preg_data <- tribble(
+  ~pregnant, ~male, ~female,
+  "yes",     NA,    10,
+  "no",      20,    12
+)
+
+print("Original tibble:")
+print(preg_data)
+```
+
+**Answer:**
+
+- **Direction**: The tibble needs to be made **longer**
+- **Variables**: 
+  - `sex` (male/female)
+  - `pregnant` (yes/no)
+  - `count` (the numeric values)
+
+```{r q5_tidy}
+# Tidy the data
+preg_tidy <- preg_data %>%
+  pivot_longer(cols = c(male, female), 
+               names_to = "sex", 
+               values_to = "count")
+
+print("Tidied tibble:")
+print(preg_tidy)
+```
+
+### Visualization: Pregnancy Status by Sex
+
+```{r q5_viz, fig.width=8, fig.height=5}
+# Visualize the tidied data
+preg_tidy %>%
+  filter(!is.na(count)) %>%
+  ggplot(aes(x = sex, y = count, fill = pregnant)) +
+  geom_col(position = "dodge", alpha = 0.8) +
+  geom_text(aes(label = count), position = position_dodge(width = 0.9),
+            vjust = -0.5, size = 4, fontface = "bold") +
+  scale_fill_manual(values = c("yes" = "#E69F00", "no" = "#56B4E9")) +
+  labs(title = "Count by Sex and Pregnancy Status",
+       x = "Sex",
+       y = "Count",
+       fill = "Pregnant") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"),
+        legend.position = "right")
+```
+
+**Note**: The NA value for male/yes is expected since males cannot be pregnant. This represents a structural missing value rather than a data quality issue.
+
+---
+

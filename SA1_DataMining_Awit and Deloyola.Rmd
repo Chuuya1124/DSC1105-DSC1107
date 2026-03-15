@@ -1,0 +1,884 @@
+---
+title: "SA1 Data Mining"
+author: "Awit, Julia Theressa and Deloyola, Jhen Reyniel"
+date: "March 10, 2026`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    theme: flatly
+    highlight: tango
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo    = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width  = 9,
+  fig.height = 5,
+  fig.align  = "center"
+)
+```
+
+---
+
+### Load Libraries
+
+```{r load-libraries}
+library(tidyverse)    
+library(caret)       
+library(glmnet)       
+library(ggplot2)      
+library(randomForest) 
+library(rpart)        
+library(rpart.plot)   
+library(corrplot)     
+library(scales)       
+library(e1071)        
+library(gridExtra)    
+
+set.seed(42)
+```
+
+### Load Dataset
+
+```{r load-data}
+df <- read.csv("customer_churn.csv", stringsAsFactors = FALSE)
+
+cat("=== Dataset Dimensions ===\n")
+cat("Rows:", nrow(df), "| Columns:", ncol(df), "\n\n")
+
+cat("=== Column Names ===\n")
+print(names(df))
+
+cat("\n=== Data Types ===\n")
+str(df)
+```
+
+### Dataset Overview
+
+```{r data-overview}
+cat("=== Summary Statistics ===\n")
+summary(df)
+
+cat("\n=== Missing Values Per Column ===\n")
+missing_vals <- colSums(is.na(df))
+print(missing_vals[missing_vals > 0])
+if (sum(missing_vals) == 0) cat("No missing values detected in initial scan.\n")
+
+cat("\n=== Churn Distribution ===\n")
+print(table(df$Churn))
+print(prop.table(table(df$Churn)))
+```
+
+### Why Data Mining Is Important for This Dataset
+
+> **Data Mining Importance:**  
+> This dataset contains 10,000 customer records with demographics, service usage, and churn labels.
+> The business problem — predicting which customers will churn — has direct financial impact.
+> Retaining an existing customer is significantly cheaper than acquiring a new one.
+>
+> Data mining techniques allow us to:
+> - **Discover patterns** hidden in high-dimensional customer data
+> - **Build predictive models** to flag at-risk customers before they leave
+> - **Identify key drivers** of churn (e.g., contract type, monthly charges)
+> - **Enable proactive interventions** through customer segmentation and targeted offers
+>
+> Without data mining, the only strategy is reactive — waiting for a customer to leave before acting.
+
+---
+
+## Data Visualization
+
+```{r viz-prep}
+# Clean Churn and trim all character columns for safe plotting
+df_plot <- df %>%
+  mutate(across(where(is.character), trimws)) %>%
+  mutate(Churn = ifelse(Churn %in% c("Yes", "1", 1), "Yes", "No"))
+```
+
+### Visualization 1
+
+```{r viz-tenure}
+df_plot %>%
+  mutate(TenureGroup = cut(Tenure,
+                           breaks = c(-Inf, 12, 24, 48, Inf),
+                           labels = c("0-12 mo", "13-24 mo", "25-48 mo", "49+ mo"))) %>%
+  group_by(TenureGroup) %>%
+  summarise(
+    Total     = n(),
+    Churned   = sum(Churn == "Yes"),
+    ChurnRate = Churned / Total,
+    .groups   = "drop"
+  ) %>%
+  ggplot(aes(x = TenureGroup, y = ChurnRate, fill = TenureGroup)) +
+  geom_col(width = 0.6, show.legend = FALSE) +
+  geom_text(aes(label = percent(ChurnRate, accuracy = 0.1)),
+            vjust = -0.4, size = 4.5, fontface = "bold") +
+  scale_y_continuous(labels = percent_format(), limits = c(0, 0.65)) +
+  scale_fill_manual(values = c("#E74C3C", "#E67E22", "#3498DB", "#2ECC71")) +
+  labs(
+    title    = "Churn Rate by Customer Tenure Group",
+    subtitle = "Newer customers churn at a significantly higher rate",
+    x = "Tenure Group", y = "Churn Rate (%)"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+**Insight:** Customers with less than 12 months of tenure have the highest churn rate. As tenure increases, churn rate drops substantially — indicating that long-term customers are more loyal and less likely to leave.
+
+---
+
+### Visualization 2
+
+```{r viz-charges}
+ggplot(df_plot, aes(x = MonthlyCharges, fill = Churn)) +
+  geom_density(alpha = 0.55, linewidth = 0.8) +
+  scale_fill_manual(values = c("No" = "#2ECC71", "Yes" = "#E74C3C")) +
+  labs(
+    title    = "Monthly Charges Distribution by Churn Status",
+    subtitle = "Churned customers tend to pay higher monthly charges",
+    x = "Monthly Charges ($)", y = "Density", fill = "Churned"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+**Insight:** Churned customers cluster at higher monthly charges (~$70–$100+), while retained customers spread toward lower charges. High billing may indicate price sensitivity as a churn trigger.
+
+---
+
+### Visualization 3
+
+```{r viz-contract}
+df_plot %>%
+  filter(Contract != "") %>%
+  group_by(Contract, Churn) %>%
+  summarise(Count = n(), .groups = "drop") %>%
+  group_by(Contract) %>%
+  mutate(Pct = Count / sum(Count)) %>%
+  ggplot(aes(x = Contract, y = Pct, fill = Churn)) +
+  geom_col(position = "fill", width = 0.55) +
+  geom_text(aes(label = percent(Pct, accuracy = 1)),
+            position = position_fill(vjust = 0.5),
+            size = 4.2, color = "white", fontface = "bold") +
+  scale_y_continuous(labels = percent_format()) +
+  scale_fill_manual(values = c("No" = "#2980B9", "Yes" = "#E74C3C")) +
+  labs(
+    title    = "Churn Rate by Contract Type",
+    subtitle = "Month-to-month contracts have the highest churn risk",
+    x = "Contract Type", y = "Proportion", fill = "Churned"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+**Insight:** Month-to-month contract holders show dramatically higher churn rates. Long-term contract customers are effectively "locked in" — contract type is one of the strongest predictors of churn.
+
+---
+
+### Visualization 4
+
+```{r viz-corr}
+num_vars <- df_plot %>%
+  mutate(
+    ChurnBinary   = ifelse(Churn == "Yes", 1, 0),
+    SeniorCitizen = as.numeric(SeniorCitizen)
+  ) %>%
+  select(Tenure, MonthlyCharges, TotalCharges, SeniorCitizen, ChurnBinary) %>%
+  drop_na()
+
+corrplot(cor(num_vars, use = "complete.obs"),
+         method = "color", type = "upper",
+         addCoef.col = "black", tl.col = "black", tl.srt = 45,
+         col = colorRampPalette(c("#2980B9", "white", "#E74C3C"))(200),
+         title = "Correlation Matrix of Numerical Features",
+         mar   = c(0, 0, 2, 0))
+```
+
+**Insight:** `TotalCharges` and `Tenure` are highly correlated (total charges accumulate over time). `MonthlyCharges` shows a moderate positive correlation with churn, confirming the density plot finding.
+
+---
+
+## Data Transformation
+
+```{r data-transform}
+df_clean <- df %>%
+  # Trim all whitespace from character columns
+  mutate(across(where(is.character), trimws)) %>%
+
+  # Replace empty strings with NA
+  mutate(across(where(is.character), ~na_if(., ""))) %>%
+
+  # Standardize Churn to Yes/No factor
+  mutate(Churn = ifelse(Churn %in% c("Yes", "1", 1), "Yes", "No"),
+         Churn = factor(Churn, levels = c("No", "Yes"))) %>%
+
+  # Coerce numeric columns (TotalCharges sometimes read as character)
+  mutate(
+    Tenure         = as.numeric(Tenure),
+    MonthlyCharges = as.numeric(MonthlyCharges),
+    TotalCharges   = as.numeric(TotalCharges)
+  ) %>%
+
+  # Impute numeric NAs with median
+  mutate(
+    Tenure         = ifelse(is.na(Tenure),         median(Tenure,         na.rm = TRUE), Tenure),
+    MonthlyCharges = ifelse(is.na(MonthlyCharges), median(MonthlyCharges, na.rm = TRUE), MonthlyCharges),
+    TotalCharges   = ifelse(is.na(TotalCharges),   median(TotalCharges,   na.rm = TRUE), TotalCharges)
+  ) %>%
+
+  # Convert categoricals to factors
+  mutate(
+    Gender          = factor(Gender),
+    SeniorCitizen   = factor(as.character(SeniorCitizen),
+                             levels = c("0","1"), labels = c("No","Yes")),
+    Partner         = factor(Partner),
+    Dependents      = factor(Dependents),
+    PhoneService    = factor(PhoneService),
+    InternetService = factor(InternetService),
+    Contract        = factor(Contract)
+  ) %>%
+
+  # Drop rows that still have NA (e.g., missing categoricals)
+  drop_na() %>%
+
+  # Drop unused factor levels
+  droplevels()
+
+cat("=== Post-Transformation Structure ===\n")
+str(df_clean)
+
+cat("\n=== Remaining Missing Values ===\n")
+print(colSums(is.na(df_clean)))
+
+cat("\nRows remaining:", nrow(df_clean), "\n")
+```
+
+### Normalize Numerical Features
+
+```{r normalize}
+df_clean <- df_clean %>%
+  mutate(
+    Tenure_scaled         = as.numeric(scale(Tenure)),
+    MonthlyCharges_scaled = as.numeric(scale(MonthlyCharges)),
+    TotalCharges_scaled   = as.numeric(scale(TotalCharges))
+  )
+
+cat("=== Scaled Feature Summary ===\n")
+summary(df_clean %>% select(Tenure_scaled, MonthlyCharges_scaled, TotalCharges_scaled))
+```
+
+---
+
+### Remove Outliers (IQR Method)
+
+```{r outliers}
+remove_outliers_iqr <- function(data, col) {
+  q1    <- quantile(data[[col]], 0.25, na.rm = TRUE)
+  q3    <- quantile(data[[col]], 0.75, na.rm = TRUE)
+  iqr   <- q3 - q1
+  lower <- q1 - 1.5 * iqr
+  upper <- q3 + 1.5 * iqr
+  data %>% filter(.data[[col]] >= lower & .data[[col]] <= upper)
+}
+
+nrow_before <- nrow(df_clean)
+df_clean    <- df_clean %>%
+  remove_outliers_iqr("MonthlyCharges") %>%
+  remove_outliers_iqr("TotalCharges")
+nrow_after  <- nrow(df_clean)
+
+cat("Rows before outlier removal:", nrow_before, "\n")
+cat("Rows after  outlier removal:", nrow_after,  "\n")
+cat("Outliers removed:           ", nrow_before - nrow_after, "\n")
+```
+
+### Create Derived Variables
+
+```{r derived-vars}
+df_clean <- df_clean %>%
+  mutate(
+    AvgMonthlySpend = ifelse(Tenure > 0, TotalCharges / Tenure, MonthlyCharges),
+    TenureGroup     = cut(Tenure,
+                          breaks = c(-Inf, 12, 24, 48, Inf),
+                          labels = c("New", "Early", "Mid", "Long-term")),
+    HighValue       = factor(ifelse(MonthlyCharges > median(MonthlyCharges), "Yes", "No"))
+  )
+
+cat("=== Derived Variables Preview ===\n")
+df_clean %>%
+  select(Tenure, TotalCharges, AvgMonthlySpend, TenureGroup, HighValue) %>%
+  head(8)
+```
+
+### Aggregate Summary by Contract and Churn
+
+```{r aggregation}
+df_clean %>%
+  group_by(Contract, Churn) %>%
+  summarise(
+    Count       = n(),
+    Avg_Tenure  = round(mean(Tenure), 1),
+    Avg_Monthly = round(mean(MonthlyCharges), 2),
+    Avg_Total   = round(mean(TotalCharges), 2),
+    .groups     = "drop"
+  ) %>%
+  arrange(Contract, Churn)
+```
+
+---
+
+## EDA Summary & Key Takeaways
+
+> **Key Takeaways:**
+>
+> 1. **Tenure is inversely related to churn** — the first 12 months are the highest-risk window.
+> 2. **Higher monthly charges correlate with churn** — price sensitivity is evident.
+> 3. **Contract type is a strong predictor** — month-to-month customers churn far more.
+> 4. **TotalCharges and Tenure are multicollinear** — regularization (Ridge/Lasso) or PCA recommended.
+> 5. **Senior citizens (~15%)** may have distinct churn behavior warranting separate analysis.
+
+---
+
+# Tuning Predictive Models
+
+## Prepare Modeling Dataset
+
+```{r model-prep}
+# ── Build clean modeling dataframe ─────────────────────────────────────────
+model_df <- df_clean %>%
+  select(Churn, Tenure, MonthlyCharges, TotalCharges,
+         SeniorCitizen, Contract, InternetService,
+         Gender, Partner, Dependents, PhoneService) %>%
+
+  # Trim + remove empty strings one more time to be safe
+  mutate(across(where(is.character), trimws)) %>%
+  mutate(across(where(is.character), ~na_if(., ""))) %>%
+
+  # Ensure correct types
+  mutate(
+    Tenure         = as.numeric(Tenure),
+    MonthlyCharges = as.numeric(MonthlyCharges),
+    TotalCharges   = as.numeric(TotalCharges),
+    Churn           = factor(Churn, levels = c("No", "Yes")),
+    Contract        = factor(Contract),
+    InternetService = factor(InternetService),
+    SeniorCitizen   = factor(as.character(SeniorCitizen)),
+    Gender          = factor(Gender),
+    Partner         = factor(Partner),
+    Dependents      = factor(Dependents),
+    PhoneService    = factor(PhoneService)
+  ) %>%
+  drop_na() %>%
+  droplevels()
+
+# Verify — must show Factor/num, NO chr
+cat("=== Model DataFrame Structure ===\n")
+str(model_df)
+
+cat("\n=== Churn Distribution ===\n")
+print(prop.table(table(model_df$Churn)))
+
+# ── Train / Test split (70 / 30) ───────────────────────────────────────────
+set.seed(42)
+train_idx  <- createDataPartition(model_df$Churn, p = 0.70, list = FALSE)
+train_data <- model_df[train_idx, ]
+test_data  <- model_df[-train_idx, ]
+
+cat("\nTrain size:", nrow(train_data), "| Test size:", nrow(test_data), "\n")
+```
+
+---
+
+## Decision Tree vs Logistic Regression
+
+### Decision Tree
+
+```{r decision-tree}
+dt_model <- rpart(
+  Churn ~ Tenure + MonthlyCharges + TotalCharges +
+          Contract + InternetService + SeniorCitizen,
+  data   = train_data,
+  method = "class",
+  control = rpart.control(
+    cp        = 0.001,
+    maxdepth  = 5,
+    minsplit  = 20,
+    minbucket = 7
+  )
+)
+
+cat("=== Decision Tree CP Table ===\n")
+printcp(dt_model)
+
+# Prune to best cp
+best_cp  <- dt_model$cptable[which.min(dt_model$cptable[, "xerror"]), "CP"]
+dt_model <- prune(dt_model, cp = best_cp)
+
+rpart.plot(dt_model,
+           type        = 4,
+           extra       = 106,
+           box.palette = c("#E74C3C", "#2ECC71"),
+           fallen.leaves = TRUE,
+           main        = "Decision Tree: Customer Churn Prediction")
+
+# Performance
+dt_pred <- predict(dt_model, test_data, type = "class")
+dt_cm   <- confusionMatrix(dt_pred, test_data$Churn, positive = "Yes")
+cat("\n=== Decision Tree Test Performance ===\n")
+print(dt_cm$overall[c("Accuracy", "Kappa")])
+print(dt_cm$byClass[c("Sensitivity", "Specificity", "Precision", "F1")])
+```
+
+### Logistic Regression
+
+```{r logistic-regression-complexity}
+lr_model <- glm(
+  Churn ~ Tenure + MonthlyCharges + TotalCharges +
+          Contract + InternetService + SeniorCitizen,
+  data   = train_data,
+  family = binomial(link = "logit")
+)
+
+lr_prob <- predict(lr_model, test_data, type = "response")
+lr_pred <- factor(ifelse(lr_prob > 0.5, "Yes", "No"), levels = c("No", "Yes"))
+lr_cm   <- confusionMatrix(lr_pred, test_data$Churn, positive = "Yes")
+
+cat("=== Logistic Regression Test Performance ===\n")
+print(lr_cm$overall[c("Accuracy", "Kappa")])
+print(lr_cm$byClass[c("Sensitivity", "Specificity", "Precision", "F1")])
+```
+
+### Complexity Comparison Table
+
+```{r complexity-compare}
+tibble(
+  Aspect               = c("Model Type", "Interpretability",
+                            "Handles Non-linearity", "Overfitting Risk",
+                            "Test Accuracy"),
+  Decision_Tree        = c("Non-parametric", "High (visual splits)",
+                            "Yes", "High without pruning",
+                            round(dt_cm$overall["Accuracy"], 4)),
+  Logistic_Regression  = c("Parametric", "High (coefficients)",
+                            "No (linear boundary)", "Low",
+                            round(lr_cm$overall["Accuracy"], 4))
+)
+```
+
+> **Trade-off Discussion:**  
+> Decision trees capture non-linear interactions and are easy to visualize, but overfit without pruning.
+> Logistic Regression is stable and interpretable via odds ratios, but assumes linearity.
+> For churn prediction with mixed variable types, ensemble methods (Random Forest) generally outperform both.
+
+---
+
+## 2.2 Bias-Variance Trade-Off
+
+```{r bias-variance, fig.height=4.5}
+depths    <- 1:12
+acc_train <- numeric(length(depths))
+acc_test  <- numeric(length(depths))
+
+for (i in seq_along(depths)) {
+  m <- rpart(
+    Churn ~ Tenure + MonthlyCharges + TotalCharges + Contract + InternetService,
+    data    = train_data,
+    method  = "class",
+    control = rpart.control(maxdepth = depths[i], cp = 0)
+  )
+  acc_train[i] <- mean(predict(m, train_data, type = "class") == train_data$Churn)
+  acc_test[i]  <- mean(predict(m, test_data,  type = "class") == test_data$Churn)
+}
+
+tibble(Depth = depths, Train = acc_train, Test = acc_test) %>%
+  pivot_longer(c(Train, Test), names_to = "Set", values_to = "Accuracy") %>%
+  ggplot(aes(x = Depth, y = Accuracy, color = Set, group = Set)) +
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 2.5) +
+  scale_color_manual(values = c("Train" = "#3498DB", "Test" = "#E74C3C")) +
+  scale_y_continuous(labels = percent_format()) +
+  scale_x_continuous(breaks = depths) +
+  labs(
+    title    = "Bias-Variance Trade-off: Tree Depth vs. Accuracy",
+    subtitle = "Train accuracy rises with depth; test accuracy plateaus or drops",
+    x = "Tree Max Depth", y = "Accuracy", color = "Dataset"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+> **Explanation:**  
+> - **High Bias (depth 1–2):** Model is too simple; underfits both train and test.  
+> - **High Variance (depth 8+):** Model memorizes training noise; test accuracy degrades.  
+> - **Optimal zone (~depth 4–6):** Best generalization — balanced bias and variance.  
+> - Logistic Regression has fixed high bias (linear boundary) but consistently low variance.
+
+---
+
+## Cross-Validation (k = 10)
+
+```{r cross-validation}
+cv_ctrl <- trainControl(
+  method          = "cv",
+  number          = 10,
+  classProbs      = TRUE,
+  summaryFunction = twoClassSummary,
+  savePredictions = "final"
+)
+
+# Decision Tree (CV)
+dt_cv <- train(
+  Churn ~ Tenure + MonthlyCharges + TotalCharges + Contract + InternetService + SeniorCitizen,
+  data       = train_data,
+  method     = "rpart",
+  metric     = "ROC",
+  trControl  = cv_ctrl,
+  tuneLength = 10
+)
+
+# Logistic Regression (CV)
+lr_cv <- train(
+  Churn ~ Tenure + MonthlyCharges + TotalCharges + Contract + InternetService + SeniorCitizen,
+  data      = train_data,
+  method    = "glm",
+  family    = "binomial",
+  metric    = "ROC",
+  trControl = cv_ctrl
+)
+
+cat("=== 10-Fold CV ROC Scores ===\n")
+cat("Decision Tree  (best ROC):", round(max(dt_cv$results$ROC), 4), "\n")
+cat("Logistic Regression (ROC):", round(lr_cv$results$ROC, 4), "\n")
+```
+
+```{r cv-metrics}
+# Helper to extract metrics from CV predictions
+get_cv_metrics <- function(preds_df, model_name) {
+  p <- preds_df %>%
+    mutate(pred = factor(pred, levels = c("No","Yes")),
+           obs  = factor(obs,  levels = c("No","Yes")))
+  cm <- confusionMatrix(p$pred, p$obs, positive = "Yes")
+  tibble(
+    Model     = model_name,
+    Accuracy  = round(cm$overall["Accuracy"],    4),
+    Precision = round(cm$byClass["Precision"],   4),
+    Recall    = round(cm$byClass["Sensitivity"], 4),
+    F1        = round(cm$byClass["F1"],          4)
+  )
+}
+
+dt_preds_cv <- dt_cv$pred %>%
+  filter(cp == dt_cv$bestTune$cp)
+
+lr_preds_cv <- lr_cv$pred
+
+cv_results <- bind_rows(
+  get_cv_metrics(dt_preds_cv, "Decision Tree"),
+  get_cv_metrics(lr_preds_cv, "Logistic Regression")
+)
+
+cat("=== 10-Fold CV Classification Metrics ===\n")
+print(cv_results)
+```
+
+> **Interpretation:**  
+> 10-fold CV gives a more reliable estimate than a single split. F1-score is most informative here due to class imbalance — a model that predicts "No" for everyone achieves ~73% accuracy but zero recall for churners.
+
+---
+
+## Random Forest with Hyperparameter Tuning
+
+```{r random-forest}
+rf_ctrl <- trainControl(
+  method          = "cv",
+  number          = 5,
+  classProbs      = TRUE,
+  summaryFunction = twoClassSummary
+)
+
+rf_grid <- expand.grid(mtry = c(2, 3, 4, 5, 6))
+
+rf_model <- train(
+  Churn ~ Tenure + MonthlyCharges + TotalCharges + Contract +
+          InternetService + SeniorCitizen + Gender + Partner + Dependents,
+  data      = train_data,
+  method    = "rf",
+  metric    = "ROC",
+  trControl = rf_ctrl,
+  tuneGrid  = rf_grid,
+  ntree     = 200
+)
+
+cat("=== Random Forest Best Tune ===\n")
+print(rf_model$bestTune)
+
+cat("\n=== CV Results by mtry ===\n")
+print(rf_model$results[, c("mtry", "ROC", "Sens", "Spec")])
+```
+
+```{r rf-performance}
+rf_pred <- predict(rf_model, test_data)
+rf_cm   <- confusionMatrix(rf_pred, test_data$Churn, positive = "Yes")
+
+cat("=== Random Forest Final Performance ===\n")
+print(rf_cm$overall[c("Accuracy", "Kappa")])
+print(rf_cm$byClass[c("Sensitivity", "Specificity", "Precision", "F1")])
+
+# Variable importance
+varImpPlot(rf_model$finalModel,
+           n.var = 10,
+           main  = "Random Forest: Top 10 Variable Importance",
+           col   = "#2C3E50", pch = 16)
+```
+
+> **Summary:** Random Forest ensembles many decorrelated trees and significantly outperforms a single tree. Grid search over `mtry` selects the optimal feature subset per split. `Contract`, `Tenure`, and `MonthlyCharges` typically emerge as the most important predictors.
+
+---
+
+# Regression-Based Methods
+
+## 3.1 Logistic Regression (Interpretation)
+
+```{r logistic-regression-unit3}
+lr_unit3 <- glm(
+  Churn ~ Tenure + MonthlyCharges + TotalCharges,
+  data   = train_data,
+  family = binomial(link = "logit")
+)
+
+cat("=== Logistic Regression Summary ===\n")
+summary(lr_unit3)
+```
+
+```{r lr-odds-ratios}
+cat("=== Odds Ratios with 95% Confidence Intervals ===\n")
+or_table <- exp(cbind(OddsRatio = coef(lr_unit3), confint(lr_unit3)))
+print(round(or_table, 4))
+
+lr3_prob <- predict(lr_unit3, test_data, type = "response")
+lr3_pred <- factor(ifelse(lr3_prob > 0.5, "Yes", "No"), levels = c("No", "Yes"))
+lr3_cm   <- confusionMatrix(lr3_pred, test_data$Churn, positive = "Yes")
+
+cat("\nTest Accuracy:", round(lr3_cm$overall["Accuracy"], 4), "\n")
+cat("AIC:          ", round(AIC(lr_unit3), 2), "\n")
+```
+
+> **Coefficient Interpretation:**  
+> - **Tenure (negative):** Longer-tenured customers have lower log-odds of churning — loyalty grows over time.  
+> - **MonthlyCharges (positive):** Higher bills increase the probability of churn — price sensitivity is significant.  
+> - **TotalCharges:** Multicollinear with Tenure; interpret with caution alongside the other two.  
+> - **P-values < 0.05** confirm statistical significance of predictors.
+
+---
+
+## High-Dimensional Regression & PCA
+
+```{r pca}
+pca_data <- df_clean %>%
+  select(Tenure, MonthlyCharges, TotalCharges) %>%
+  drop_na() %>%
+  scale()
+
+pca_result <- prcomp(pca_data, center = FALSE, scale. = FALSE)
+
+cat("=== PCA Summary ===\n")
+summary(pca_result)
+
+# Scree plot
+var_explained <- (pca_result$sdev^2) / sum(pca_result$sdev^2)
+tibble(
+  PC    = paste0("PC", seq_along(var_explained)),
+  Var   = var_explained,
+  Cumul = cumsum(var_explained)
+) %>%
+  ggplot(aes(x = PC)) +
+  geom_col(aes(y = Var), fill = "#3498DB", width = 0.5) +
+  geom_line(aes(y = Cumul, group = 1), color = "#E74C3C", linewidth = 1.2) +
+  geom_point(aes(y = Cumul), color = "#E74C3C", size = 3) +
+  geom_hline(yintercept = 0.95, linetype = "dashed", color = "gray50") +
+  scale_y_continuous(labels = percent_format()) +
+  labs(
+    title    = "PCA Scree Plot: Variance Explained",
+    subtitle = "Red = cumulative variance; dashed = 95% threshold",
+    x = "Principal Component", y = "Variance Explained"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"))
+
+cat("\n=== PCA Loadings ===\n")
+print(round(pca_result$rotation, 4))
+```
+
+> **Discussion:**  
+> High-dimensional regression challenges include multicollinearity (inflated SE), overfitting, and unstable coefficient estimates. Solutions: **PCA** produces orthogonal components that eliminate multicollinearity; **Ridge** shrinks all coefficients; **Lasso** zeros out irrelevant ones. PC1 here primarily captures the "customer lifetime value" axis (Tenure + TotalCharges), while PC2 isolates price level (MonthlyCharges).
+
+---
+
+## Ridge Regression
+
+```{r ridge-prep}
+# Build model matrices — factors must have clean levels (ensured by droplevels() above)
+X_train <- model.matrix(
+  ~ Tenure + MonthlyCharges + TotalCharges +
+    SeniorCitizen + Gender + Partner + Dependents +
+    Contract + InternetService,
+  data = train_data
+)[, -1]   # drop intercept column
+
+X_test <- model.matrix(
+  ~ Tenure + MonthlyCharges + TotalCharges +
+    SeniorCitizen + Gender + Partner + Dependents +
+    Contract + InternetService,
+  data = test_data
+)[, -1]
+
+y_train <- ifelse(train_data$Churn == "Yes", 1, 0)
+y_test  <- ifelse(test_data$Churn  == "Yes", 1, 0)
+
+cat("X_train dimensions:", dim(X_train), "\n")
+cat("Column names:\n")
+print(colnames(X_train))
+```
+
+```{r ridge-regression}
+# Cross-validated Ridge (alpha = 0)
+ridge_cv <- cv.glmnet(X_train, y_train,
+                      family       = "binomial",
+                      alpha        = 0,
+                      nfolds       = 10,
+                      type.measure = "class")
+
+cat("=== Ridge: Optimal Lambda ===\n")
+cat("Lambda min:", round(ridge_cv$lambda.min, 6), "\n")
+cat("Lambda 1se:", round(ridge_cv$lambda.1se, 6), "\n")
+
+plot(ridge_cv, main = "Ridge: CV Error vs. log(Lambda)")
+```
+
+```{r ridge-fit}
+ridge_final <- glmnet(X_train, y_train,
+                      family = "binomial",
+                      alpha  = 0,
+                      lambda = ridge_cv$lambda.min)
+
+cat("=== Ridge Coefficients (lambda.min) ===\n")
+print(round(as.matrix(coef(ridge_final)), 4))
+
+ridge_prob <- predict(ridge_final, newx = X_test, type = "response")
+ridge_pred <- factor(ifelse(ridge_prob > 0.5, "Yes", "No"), levels = c("No", "Yes"))
+ridge_cm   <- confusionMatrix(ridge_pred, test_data$Churn, positive = "Yes")
+
+cat("\n=== Ridge Test Performance ===\n")
+print(ridge_cm$overall[c("Accuracy", "Kappa")])
+print(ridge_cm$byClass[c("Sensitivity", "Specificity", "Precision", "F1")])
+```
+
+> **Ridge Summary:** The L2 penalty (λΣβ²) shrinks all coefficients toward zero but retains every predictor. Optimal λ is chosen by 10-fold CV. Ridge is ideal here because of the multicollinearity between Tenure and TotalCharges — it stabilizes estimates without discarding variables.
+
+---
+
+## Lasso Regression
+
+```{r lasso-regression}
+# Cross-validated Lasso (alpha = 1)
+lasso_cv <- cv.glmnet(X_train, y_train,
+                      family       = "binomial",
+                      alpha        = 1,
+                      nfolds       = 10,
+                      type.measure = "class")
+
+cat("=== Lasso: Optimal Lambda ===\n")
+cat("Lambda min:", round(lasso_cv$lambda.min, 6), "\n")
+cat("Lambda 1se:", round(lasso_cv$lambda.1se, 6), "\n")
+
+plot(lasso_cv, main = "Lasso: CV Error vs. log(Lambda)")
+```
+
+```{r lasso-fit}
+lasso_final <- glmnet(X_train, y_train,
+                      family = "binomial",
+                      alpha  = 1,
+                      lambda = lasso_cv$lambda.min)
+
+lasso_coefs <- as.matrix(coef(lasso_final))
+
+cat("=== Lasso Coefficients (lambda.min) ===\n")
+print(round(lasso_coefs, 4))
+
+cat("\n=== Features Zeroed Out by Lasso ===\n")
+zeroed <- rownames(lasso_coefs)[lasso_coefs[, 1] == 0]
+if (length(zeroed) == 0) cat("None — all features retained at lambda.min\n") else cat(paste(zeroed, collapse = ", "), "\n")
+
+cat("\n=== Active Features Retained ===\n")
+active <- rownames(lasso_coefs)[lasso_coefs[, 1] != 0]
+cat(paste(active, collapse = ", "), "\n")
+
+lasso_prob <- predict(lasso_final, newx = X_test, type = "response")
+lasso_pred <- factor(ifelse(lasso_prob > 0.5, "Yes", "No"), levels = c("No", "Yes"))
+lasso_cm   <- confusionMatrix(lasso_pred, test_data$Churn, positive = "Yes")
+
+cat("\n=== Lasso Test Performance ===\n")
+print(lasso_cm$overall[c("Accuracy", "Kappa")])
+print(lasso_cm$byClass[c("Sensitivity", "Specificity", "Precision", "F1")])
+```
+
+> **Lasso Benefits:** The L1 penalty (λΣ|β|) forces some coefficients exactly to zero, performing automatic feature selection. This produces a sparse, interpretable model. Lasso likely retains Contract, Tenure, and MonthlyCharges while zeroing out less informative demographics — confirming their importance as churn drivers.
+
+---
+
+## Final Model Comparison
+
+```{r final-comparison}
+results <- tibble(
+  Model     = c("Decision Tree", "Logistic Regression",
+                "Random Forest", "Ridge Regression", "Lasso Regression"),
+  Accuracy  = c(round(dt_cm$overall["Accuracy"],    4),
+                round(lr_cm$overall["Accuracy"],    4),
+                round(rf_cm$overall["Accuracy"],    4),
+                round(ridge_cm$overall["Accuracy"], 4),
+                round(lasso_cm$overall["Accuracy"], 4)),
+  F1_Score  = c(round(dt_cm$byClass["F1"],    4),
+                round(lr_cm$byClass["F1"],    4),
+                round(rf_cm$byClass["F1"],    4),
+                round(ridge_cm$byClass["F1"], 4),
+                round(lasso_cm$byClass["F1"], 4)),
+  Recall    = c(round(dt_cm$byClass["Sensitivity"],    4),
+                round(lr_cm$byClass["Sensitivity"],    4),
+                round(rf_cm$byClass["Sensitivity"],    4),
+                round(ridge_cm$byClass["Sensitivity"], 4),
+                round(lasso_cm$byClass["Sensitivity"], 4))
+)
+
+cat("=== Final Model Comparison Table ===\n")
+print(results)
+
+# Bar chart comparison
+results %>%
+  pivot_longer(c(Accuracy, F1_Score, Recall),
+               names_to = "Metric", values_to = "Value") %>%
+  ggplot(aes(x = reorder(Model, Value), y = Value, fill = Metric)) +
+  geom_col(position = "dodge", width = 0.65) +
+  coord_flip() +
+  scale_fill_manual(values = c("#3498DB", "#E74C3C", "#2ECC71")) +
+  scale_y_continuous(labels = percent_format(), limits = c(0, 1.05)) +
+  labs(
+    title    = "Final Model Performance Comparison",
+    subtitle = "Accuracy, F1-Score, and Recall across all models",
+    x = NULL, y = "Score", fill = "Metric"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+---
+
+## Session Info
+
+```{r session-info}
+sessionInfo()
+```

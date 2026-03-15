@@ -1,0 +1,786 @@
+---
+title: "SA1 Exploratory Analysis"
+author: "Awit, Julia Theressa and Deloyola, Jhen reyniel"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    theme: flatly
+    highlight: tango
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo       = TRUE,
+  warning    = FALSE,
+  message    = FALSE,
+  fig.width  = 9,
+  fig.height = 5,
+  fig.align  = "center"
+)
+```
+
+---
+
+## 1.1 Load Dataset & Summarize Structure
+
+```{r load-libraries}
+library(tidyverse)   # Core data wrangling + ggplot2
+library(moments)     # Skewness and kurtosis
+library(gridExtra)   # Multi-panel plots
+library(scales)      # Axis formatting
+library(MASS)        # Robust regression (rlm)
+library(e1071)       # Mode helper
+library(ggcorrplot)  # Correlation plot
+library(car)         # VIF for regression
+
+set.seed(42)
+```
+
+```{r load-data}
+df <- read.csv("EDA_Ecommerce_Assessment.csv", stringsAsFactors = FALSE)
+
+# Clean factor columns
+df <- df %>%
+  mutate(
+    Gender            = factor(trimws(Gender)),
+    Category          = factor(trimws(Category)),
+    Satisfaction_Score = as.integer(Satisfaction_Score)
+  )
+
+cat("=== Dataset Dimensions ===\n")
+cat("Rows:", nrow(df), " | Columns:", ncol(df), "\n\n")
+
+cat("=== Column Types ===\n")
+str(df)
+```
+
+```{r data-overview}
+cat("=== Summary Statistics ===\n")
+summary(df)
+
+cat("\n=== Missing Values ===\n")
+mv <- colSums(is.na(df))
+print(mv)
+if (sum(mv) == 0) cat("No missing values found.\n")
+
+cat("\n=== Category Distribution ===\n")
+print(table(df$Category))
+
+cat("\n=== Gender Distribution ===\n")
+print(table(df$Gender))
+```
+
+> **Dataset Overview:**  
+> The dataset contains **3,000 customer transactions** across 10 variables covering demographics
+> (Gender, Age), browsing behaviour (Browsing_Time), purchasing metrics (Purchase_Amount,
+> Number_of_Items, Discount_Applied, Total_Transactions), product Category, and
+> Satisfaction_Score. There are no missing values. Categories are evenly distributed
+> (~575–630 records each): Beauty, Books, Clothing, Electronics, and Home & Kitchen.
+
+---
+
+## 1.2 Histograms & Boxplots
+
+### Purchase_Amount
+
+```{r hist-box-purchase}
+p1 <- ggplot(df, aes(x = Purchase_Amount)) +
+  geom_histogram(bins = 35, fill = "#3498DB", color = "white", alpha = 0.85) +
+  geom_vline(aes(xintercept = mean(Purchase_Amount)), color = "#E74C3C",
+             linetype = "dashed", linewidth = 1) +
+  labs(title = "Distribution of Purchase Amount",
+       subtitle = "Red dashed line = mean",
+       x = "Purchase Amount (USD)", y = "Count") +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"))
+
+p2 <- ggplot(df, aes(y = Purchase_Amount)) +
+  geom_boxplot(fill = "#3498DB", alpha = 0.7, outlier.colour = "#E74C3C",
+               outlier.size = 1.5) +
+  labs(title = "Boxplot of Purchase Amount", y = "Purchase Amount (USD)") +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"),
+        axis.text.x = element_blank(), axis.ticks.x = element_blank())
+
+grid.arrange(p1, p2, ncol = 2)
+```
+
+### Number_of_Items
+
+```{r hist-box-items}
+p3 <- ggplot(df, aes(x = Number_of_Items)) +
+  geom_histogram(bins = 10, fill = "#2ECC71", color = "white", alpha = 0.85) +
+  labs(title = "Distribution of Number of Items",
+       x = "Number of Items", y = "Count") +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"))
+
+p4 <- ggplot(df, aes(y = Number_of_Items)) +
+  geom_boxplot(fill = "#2ECC71", alpha = 0.7, outlier.colour = "#E74C3C",
+               outlier.size = 1.5) +
+  labs(title = "Boxplot of Number of Items", y = "Number of Items") +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"),
+        axis.text.x = element_blank(), axis.ticks.x = element_blank())
+
+grid.arrange(p3, p4, ncol = 2)
+```
+
+### Satisfaction_Score
+
+```{r hist-box-satisfaction}
+p5 <- ggplot(df, aes(x = factor(Satisfaction_Score))) +
+  geom_bar(fill = "#9B59B6", color = "white", alpha = 0.85) +
+  geom_text(stat = "count", aes(label = ..count..), vjust = -0.4, size = 4) +
+  labs(title = "Distribution of Satisfaction Score",
+       x = "Satisfaction Score (1–5)", y = "Count") +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"))
+
+p6 <- ggplot(df, aes(y = Satisfaction_Score)) +
+  geom_boxplot(fill = "#9B59B6", alpha = 0.7) +
+  labs(title = "Boxplot of Satisfaction Score", y = "Satisfaction Score") +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"),
+        axis.text.x = element_blank(), axis.ticks.x = element_blank())
+
+grid.arrange(p5, p6, ncol = 2)
+```
+
+> **Insights:**  
+> - **Purchase_Amount** is broadly spread across ~$0–$500 with a roughly uniform/slight right skew.  
+> - **Number_of_Items** ranges from 1–10 and appears approximately uniform (consistent basket sizes).  
+> - **Satisfaction_Score** is nearly uniformly distributed across 1–5, indicating no overwhelming satisfaction bias in this dataset.
+
+---
+
+## 1.3 Measures of Central Tendency & Spread for Purchase_Amount
+
+```{r central-tendency}
+# Mode helper function
+get_mode <- function(x) {
+  ux <- unique(x)
+  ux[which.max(tabulate(match(x, ux)))]
+}
+
+pa <- df$Purchase_Amount
+
+cat("=== Central Tendency ===\n")
+cat("Mean:   ", round(mean(pa), 2), "\n")
+cat("Median: ", round(median(pa), 2), "\n")
+cat("Mode:   ", round(get_mode(pa), 2), "\n")
+
+cat("\n=== Spread ===\n")
+cat("Variance:           ", round(var(pa), 2), "\n")
+cat("Std Deviation:      ", round(sd(pa), 2), "\n")
+cat("IQR:                ", round(IQR(pa), 2), "\n")
+cat("Range:              ", round(diff(range(pa)), 2), "\n")
+cat("Skewness:           ", round(skewness(pa), 4), "\n")
+cat("Kurtosis:           ", round(kurtosis(pa), 4), "\n")
+```
+
+> **Interpretation:**  
+> The mean and median of Purchase_Amount are close, indicating a near-symmetric distribution.
+> The standard deviation is large relative to the mean, reflecting wide variability in spending.
+> Skewness close to 0 confirms approximate symmetry; kurtosis near 3 suggests a near-normal tail shape.
+
+---
+
+## 1.4 Density Plots by Gender
+
+```{r density-gender}
+# Browsing Time by Gender
+p_bt <- ggplot(df, aes(x = Browsing_Time, fill = Gender)) +
+  geom_density(alpha = 0.50, linewidth = 0.8) +
+  scale_fill_manual(values = c("Female" = "#E74C3C", "Male" = "#3498DB")) +
+  labs(title = "Browsing Time Distribution by Gender",
+       x = "Browsing Time (min)", y = "Density", fill = "Gender") +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"))
+
+# Purchase Amount by Gender
+p_pa <- ggplot(df, aes(x = Purchase_Amount, fill = Gender)) +
+  geom_density(alpha = 0.50, linewidth = 0.8) +
+  scale_fill_manual(values = c("Female" = "#E74C3C", "Male" = "#3498DB")) +
+  labs(title = "Purchase Amount Distribution by Gender",
+       x = "Purchase Amount (USD)", y = "Density", fill = "Gender") +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"))
+
+grid.arrange(p_bt, p_pa, ncol = 2)
+```
+
+```{r gender-summary}
+df %>%
+  group_by(Gender) %>%
+  summarise(
+    Mean_Browsing  = round(mean(Browsing_Time), 2),
+    Median_Browsing = round(median(Browsing_Time), 2),
+    Mean_Purchase  = round(mean(Purchase_Amount), 2),
+    Median_Purchase = round(median(Purchase_Amount), 2),
+    .groups = "drop"
+  )
+```
+
+> **Insight:**  
+> Both gender groups show very similar distributions for Browsing_Time and Purchase_Amount,
+> suggesting gender does not strongly differentiate browsing or spending behavior in this dataset.
+
+---
+
+## 1.5 Logarithmic & Square Root Transformation on Browsing_Time
+
+```{r transformations}
+df <- df %>%
+  mutate(
+    BT_log  = log1p(Browsing_Time),   # log(1+x) handles any near-zero values
+    BT_sqrt = sqrt(Browsing_Time)
+  )
+
+cat("=== Skewness Comparison ===\n")
+cat("Original  Browsing_Time skewness:", round(skewness(df$Browsing_Time), 4), "\n")
+cat("Log-transformed       skewness:", round(skewness(df$BT_log), 4), "\n")
+cat("Sqrt-transformed      skewness:", round(skewness(df$BT_sqrt), 4), "\n")
+```
+
+```{r transform-plots}
+t1 <- ggplot(df, aes(x = Browsing_Time)) +
+  geom_histogram(bins = 30, fill = "#E67E22", color = "white", alpha = 0.85) +
+  labs(title = "Original Browsing Time",
+       subtitle = paste("Skewness:", round(skewness(df$Browsing_Time), 3)),
+       x = "Browsing Time (min)", y = "Count") +
+  theme_minimal(base_size = 12) + theme(plot.title = element_text(face = "bold"))
+
+t2 <- ggplot(df, aes(x = BT_log)) +
+  geom_histogram(bins = 30, fill = "#27AE60", color = "white", alpha = 0.85) +
+  labs(title = "Log-Transformed Browsing Time",
+       subtitle = paste("Skewness:", round(skewness(df$BT_log), 3)),
+       x = "log(Browsing Time)", y = "Count") +
+  theme_minimal(base_size = 12) + theme(plot.title = element_text(face = "bold"))
+
+t3 <- ggplot(df, aes(x = BT_sqrt)) +
+  geom_histogram(bins = 30, fill = "#8E44AD", color = "white", alpha = 0.85) +
+  labs(title = "Sqrt-Transformed Browsing Time",
+       subtitle = paste("Skewness:", round(skewness(df$BT_sqrt), 3)),
+       x = "sqrt(Browsing Time)", y = "Count") +
+  theme_minimal(base_size = 12) + theme(plot.title = element_text(face = "bold"))
+
+grid.arrange(t1, t2, t3, ncol = 3)
+```
+
+> **Evaluation:**  
+> If Browsing_Time is right-skewed, both log and square root transformations reduce skewness
+> toward zero, making the distribution more symmetric. The log transformation typically
+> achieves a stronger correction for heavy right skew. Near-zero skewness after transformation
+> indicates a more normal-like distribution, which improves the validity of regression assumptions.
+
+---
+
+## 1.6 Simple Linear Regression: Purchase_Amount ~ Browsing_Time
+
+```{r slr-model}
+slr <- lm(Purchase_Amount ~ Browsing_Time, data = df)
+
+cat("=== Simple Linear Regression Summary ===\n")
+summary(slr)
+```
+
+```{r slr-plot}
+ggplot(df, aes(x = Browsing_Time, y = Purchase_Amount)) +
+  geom_point(alpha = 0.25, color = "#3498DB", size = 1.2) +
+  geom_smooth(method = "lm", color = "#E74C3C", linewidth = 1.2, se = TRUE,
+              fill = "#F1948A") +
+  labs(
+    title    = "Purchase Amount vs. Browsing Time",
+    subtitle = paste0("Simple Linear Regression | R² = ",
+                      round(summary(slr)$r.squared, 4)),
+    x = "Browsing Time (min)", y = "Purchase Amount (USD)"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+```{r slr-diagnostics}
+cat("=== Model Coefficients ===\n")
+cat("Intercept (β₀):", round(coef(slr)[1], 4), "\n")
+cat("Slope     (β₁):", round(coef(slr)[2], 4), "\n")
+cat("R-squared:     ", round(summary(slr)$r.squared, 4), "\n")
+cat("Adj R-squared: ", round(summary(slr)$adj.r.squared, 4), "\n")
+cat("p-value (slope):", round(summary(slr)$coefficients[2,4], 4), "\n")
+```
+
+> **Interpretation:**  
+> - **Intercept (β₀):** The predicted Purchase_Amount when Browsing_Time = 0.  
+> - **Slope (β₁):** For each additional minute of browsing, Purchase_Amount changes by β₁ USD.
+>   A positive slope indicates more browsing associates with higher spending; negative would indicate the opposite.  
+> - **R²:** The proportion of variance in Purchase_Amount explained by Browsing_Time alone.
+>   A low R² suggests that browsing time alone is insufficient — other variables are needed.  
+> - **p-value:** If < 0.05, Browsing_Time is a statistically significant predictor.
+
+---
+
+# Unit 2: Bivariate Data Analysis
+
+## 2.1 Scatter Plot: Purchase_Amount vs. Number_of_Items
+
+```{r scatter-items}
+ggplot(df, aes(x = Number_of_Items, y = Purchase_Amount)) +
+  geom_jitter(alpha = 0.25, color = "#2980B9", size = 1.5, width = 0.2) +
+  geom_smooth(method = "lm", color = "#E74C3C", linewidth = 1.2,
+              se = TRUE, fill = "#F1948A") +
+  geom_smooth(method = "loess", color = "#27AE60", linewidth = 1,
+              linetype = "dashed", se = FALSE) +
+  labs(
+    title    = "Purchase Amount vs. Number of Items",
+    subtitle = "Red = Linear fit | Green dashed = LOESS",
+    x = "Number of Items", y = "Purchase Amount (USD)"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"))
+
+# Correlation
+cat("Pearson correlation (Purchase_Amount ~ Number_of_Items):",
+    round(cor(df$Purchase_Amount, df$Number_of_Items), 4), "\n")
+```
+
+> **Insight:**  
+> The scatter plot shows the relationship between basket size and total spend.
+> A positive correlation would suggest larger baskets drive higher purchase amounts.
+> The LOESS curve reveals whether the relationship is truly linear or has non-linear components.
+
+---
+
+## 2.2 Polynomial Regression vs. Simple Linear Regression
+
+```{r poly-regression}
+# Simple linear model
+lm_simple <- lm(Purchase_Amount ~ Browsing_Time, data = df)
+
+# Polynomial degree 2
+lm_poly2 <- lm(Purchase_Amount ~ poly(Browsing_Time, 2, raw = TRUE), data = df)
+
+# Polynomial degree 3
+lm_poly3 <- lm(Purchase_Amount ~ poly(Browsing_Time, 3, raw = TRUE), data = df)
+
+cat("=== Model Comparison ===\n")
+cat("Linear   R²:", round(summary(lm_simple)$r.squared, 4),
+    "| AIC:", round(AIC(lm_simple), 2), "\n")
+cat("Poly (2) R²:", round(summary(lm_poly2)$r.squared, 4),
+    "| AIC:", round(AIC(lm_poly2), 2), "\n")
+cat("Poly (3) R²:", round(summary(lm_poly3)$r.squared, 4),
+    "| AIC:", round(AIC(lm_poly3), 2), "\n")
+
+# ANOVA comparison
+cat("\n=== ANOVA: Linear vs Poly(2) ===\n")
+print(anova(lm_simple, lm_poly2))
+cat("\n=== ANOVA: Poly(2) vs Poly(3) ===\n")
+print(anova(lm_poly2, lm_poly3))
+```
+
+```{r poly-plot}
+bt_seq <- seq(min(df$Browsing_Time), max(df$Browsing_Time), length.out = 300)
+pred_df <- tibble(
+  Browsing_Time = bt_seq,
+  Linear  = predict(lm_simple, newdata = tibble(Browsing_Time = bt_seq)),
+  Poly2   = predict(lm_poly2,  newdata = tibble(Browsing_Time = bt_seq)),
+  Poly3   = predict(lm_poly3,  newdata = tibble(Browsing_Time = bt_seq))
+) %>%
+  pivot_longer(c(Linear, Poly2, Poly3), names_to = "Model", values_to = "Predicted")
+
+ggplot(df, aes(x = Browsing_Time, y = Purchase_Amount)) +
+  geom_point(alpha = 0.15, color = "gray60", size = 1) +
+  geom_line(data = pred_df, aes(y = Predicted, color = Model), linewidth = 1.1) +
+  scale_color_manual(values = c("Linear" = "#E74C3C",
+                                "Poly2"  = "#3498DB",
+                                "Poly3"  = "#2ECC71")) +
+  labs(
+    title    = "Polynomial Regression: Purchase Amount ~ Browsing Time",
+    subtitle = "Comparing Linear, Degree-2, and Degree-3 polynomial fits",
+    x = "Browsing Time (min)", y = "Purchase Amount (USD)", color = "Model"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+> **Comparison:**  
+> If ANOVA p-values are significant (< 0.05), the polynomial terms add meaningful fit over the linear model.
+> A lower AIC favors a better model with less complexity penalty.
+> If polynomial R² improvement is negligible, the simpler linear model is preferred (parsimony principle).
+
+---
+
+## 2.3 LOESS Smoothing
+
+```{r loess-plot}
+ggplot(df, aes(x = Browsing_Time, y = Purchase_Amount)) +
+  geom_point(alpha = 0.20, color = "#95A5A6", size = 1.2) +
+  geom_smooth(method = "lm",    aes(color = "Linear (OLS)"),
+              linewidth = 1.1, se = FALSE) +
+  geom_smooth(method = "loess", aes(color = "LOESS (span=0.75)"),
+              span = 0.75, linewidth = 1.1, se = TRUE, fill = "#AED6F1") +
+  geom_smooth(method = "loess", aes(color = "LOESS (span=0.3)"),
+              span = 0.30, linewidth = 1.0, linetype = "dashed", se = FALSE) +
+  scale_color_manual(
+    values = c("Linear (OLS)"      = "#E74C3C",
+               "LOESS (span=0.75)" = "#2980B9",
+               "LOESS (span=0.3)"  = "#27AE60")
+  ) +
+  labs(
+    title    = "LOESS Smoothing: Purchase Amount vs. Browsing Time",
+    subtitle = "Comparing OLS with LOESS at two bandwidth levels",
+    x = "Browsing Time (min)", y = "Purchase Amount (USD)", color = "Method"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+> **Insight:**  
+> LOESS with span = 0.75 provides a smooth, globally-influenced trend, revealing any broad
+> non-linear pattern. Span = 0.3 is more locally adaptive — it follows local fluctuations
+> more closely but can overfit. Where LOESS diverges noticeably from OLS, it signals
+> true non-linearity that the linear model misses.
+
+---
+
+## 2.4 Robust Regression vs. OLS
+
+```{r robust-regression}
+# OLS
+ols_model <- lm(Purchase_Amount ~ Browsing_Time, data = df)
+
+# Huber robust regression (MASS::rlm)
+huber_model <- rlm(Purchase_Amount ~ Browsing_Time, data = df,
+                   method = "M", psi = psi.huber)
+
+# Bisquare (Tukey) robust regression
+tukey_model <- rlm(Purchase_Amount ~ Browsing_Time, data = df,
+                   method = "M", psi = psi.bisquare)
+
+cat("=== Coefficient Comparison ===\n")
+coef_table <- tibble(
+  Method    = c("OLS", "Huber", "Tukey (Bisquare)"),
+  Intercept = c(round(coef(ols_model)[1],   2),
+                round(coef(huber_model)[1], 2),
+                round(coef(tukey_model)[1], 2)),
+  Slope     = c(round(coef(ols_model)[2],   4),
+                round(coef(huber_model)[2], 4),
+                round(coef(tukey_model)[2], 4))
+)
+print(coef_table)
+```
+
+```{r robust-plot}
+bt_grid <- tibble(Browsing_Time = seq(min(df$Browsing_Time),
+                                      max(df$Browsing_Time), length.out = 300))
+
+pred_robust <- bt_grid %>%
+  mutate(
+    OLS   = predict(ols_model,   newdata = bt_grid),
+    Huber = predict(huber_model, newdata = bt_grid),
+    Tukey = predict(tukey_model, newdata = bt_grid)
+  ) %>%
+  pivot_longer(c(OLS, Huber, Tukey), names_to = "Method", values_to = "Predicted")
+
+ggplot(df, aes(x = Browsing_Time, y = Purchase_Amount)) +
+  geom_point(alpha = 0.15, color = "gray70", size = 1) +
+  geom_line(data = pred_robust,
+            aes(y = Predicted, color = Method, linetype = Method),
+            linewidth = 1.2) +
+  scale_color_manual(values = c("OLS"   = "#E74C3C",
+                                "Huber" = "#3498DB",
+                                "Tukey" = "#27AE60")) +
+  scale_linetype_manual(values = c("OLS" = "solid",
+                                   "Huber" = "dashed",
+                                   "Tukey" = "dotdash")) +
+  labs(
+    title    = "Robust Regression vs. OLS",
+    subtitle = "Comparing OLS, Huber M-estimator, and Tukey Bisquare",
+    x = "Browsing Time (min)", y = "Purchase Amount (USD)",
+    color = "Method", linetype = "Method"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+> **Comparison:**  
+> OLS minimizes squared residuals, making it sensitive to outliers — extreme purchase values
+> can heavily pull the regression line. Huber regression down-weights large residuals
+> progressively, while Tukey bisquare completely ignores observations beyond a threshold.
+> If the lines are similar, outliers are not severely affecting OLS. If they diverge,
+> robust regression provides a more trustworthy estimate of the true relationship.
+
+---
+
+# Unit 3: Trivariate / Hypervariate Data Analysis
+
+## 3.1 Interaction Effects: Browsing_Time × Category on Purchase_Amount
+
+```{r interaction-model}
+# Fit interaction model
+int_model <- lm(Purchase_Amount ~ Browsing_Time * Category, data = df)
+
+cat("=== Interaction Model Summary ===\n")
+summary(int_model)
+```
+
+```{r interaction-plot}
+# Predict over Browsing_Time range for each Category
+bt_range <- seq(min(df$Browsing_Time), max(df$Browsing_Time), length.out = 100)
+cats     <- levels(df$Category)
+
+int_pred <- expand.grid(Browsing_Time = bt_range, Category = cats) %>%
+  mutate(Predicted = predict(int_model, newdata = .))
+
+ggplot(int_pred, aes(x = Browsing_Time, y = Predicted, color = Category)) +
+  geom_line(linewidth = 1.1) +
+  scale_color_manual(values = c("#E74C3C","#3498DB","#2ECC71","#F39C12","#9B59B6")) +
+  labs(
+    title    = "Interaction Plot: Browsing Time × Category on Purchase Amount",
+    subtitle = "Non-parallel lines indicate interaction effects",
+    x = "Browsing Time (min)", y = "Predicted Purchase Amount (USD)",
+    color = "Category"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+> **Insight:**  
+> Non-parallel lines across categories indicate that the slope of Browsing_Time on
+> Purchase_Amount differs by product category. For example, Electronics buyers may
+> increase spending more steeply with browsing time than Books buyers, reflecting
+> higher-consideration purchases. Parallel lines would indicate no interaction.
+
+---
+
+## 3.2 Coplots of Purchase_Amount vs. Browsing_Time by Category
+
+```{r coplots}
+ggplot(df, aes(x = Browsing_Time, y = Purchase_Amount)) +
+  geom_point(alpha = 0.20, color = "#3498DB", size = 1) +
+  geom_smooth(method = "lm", color = "#E74C3C", linewidth = 1,
+              se = TRUE, fill = "#F1948A") +
+  geom_smooth(method = "loess", color = "#27AE60", linewidth = 0.9,
+              linetype = "dashed", se = FALSE) +
+  facet_wrap(~ Category, ncol = 3, scales = "free_y") +
+  labs(
+    title    = "Coplot: Purchase Amount vs. Browsing Time by Category",
+    subtitle = "Red = OLS | Green dashed = LOESS | Each panel = one Category",
+    x = "Browsing Time (min)", y = "Purchase Amount (USD)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title   = element_text(face = "bold"),
+    strip.text   = element_text(face = "bold", size = 11),
+    strip.background = element_rect(fill = "#EBF5FB", color = NA)
+  )
+```
+
+> **Insight:**  
+> Faceted coplots let us compare the local relationship within each category independently.
+> Differences in slope, scatter spread, or LOESS curve shape across panels reveal
+> category-specific purchasing patterns — e.g., whether high browsing always leads to
+> higher spend in Electronics but not in Books.
+
+---
+
+## 3.3 Level Plot / Contour Plot: Browsing_Time, Number_of_Items, Purchase_Amount
+
+```{r contour-plot}
+# Create a 2D density grid using a binned average
+contour_df <- df %>%
+  mutate(
+    BT_bin   = cut(Browsing_Time,    breaks = 20),
+    Items_bin = cut(Number_of_Items, breaks = 10)
+  ) %>%
+  group_by(BT_bin, Items_bin) %>%
+  summarise(
+    Mean_Purchase  = mean(Purchase_Amount),
+    BT_mid         = mean(Browsing_Time),
+    Items_mid      = mean(Number_of_Items),
+    .groups        = "drop"
+  )
+
+ggplot(contour_df, aes(x = BT_mid, y = Items_mid, fill = Mean_Purchase)) +
+  geom_tile() +
+  geom_contour(aes(z = Mean_Purchase), color = "white", alpha = 0.6, bins = 8) +
+  scale_fill_gradient2(
+    low      = "#2980B9",
+    mid      = "#F39C12",
+    high     = "#E74C3C",
+    midpoint = median(contour_df$Mean_Purchase, na.rm = TRUE),
+    labels   = dollar_format()
+  ) +
+  labs(
+    title    = "Level Plot: Mean Purchase Amount by Browsing Time & Number of Items",
+    subtitle = "Warmer colors = higher average purchase amount",
+    x        = "Browsing Time (min)",
+    y        = "Number of Items",
+    fill     = "Mean Purchase\nAmount (USD)"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+```{r scatter-3d-proxy}
+# 3-variable scatter: size encodes Purchase_Amount
+ggplot(df %>% sample_n(500),
+       aes(x = Browsing_Time, y = Number_of_Items,
+           color = Purchase_Amount, size = Purchase_Amount)) +
+  geom_point(alpha = 0.55) +
+  scale_color_gradient(low = "#3498DB", high = "#E74C3C", labels = dollar_format()) +
+  scale_size_continuous(range = c(0.5, 4), labels = dollar_format()) +
+  labs(
+    title    = "Trivariate Scatter: Browsing Time, Items, & Purchase Amount",
+    subtitle = "Color and size both encode Purchase Amount (random sample of 500)",
+    x = "Browsing Time (min)", y = "Number of Items",
+    color = "Purchase\nAmount", size = "Purchase\nAmount"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+> **Insight:**  
+> The level/contour plot reveals joint regions of Browsing_Time and Number_of_Items
+> that produce the highest average spending. High spending tends to emerge at specific
+> combinations — for example, moderate browsing time with higher item counts, or
+> long browsing with fewer, premium items (e.g., Electronics).
+
+---
+
+## 3.4 Multiple Regression & Model Selection
+
+```{r multiple-regression}
+# Full multiple regression model
+mlr_full <- lm(
+  Purchase_Amount ~ Browsing_Time + Number_of_Items + Satisfaction_Score,
+  data = df
+)
+
+cat("=== Full Multiple Regression Summary ===\n")
+summary(mlr_full)
+```
+
+```{r model-selection}
+# Null model (intercept only)
+mlr_null <- lm(Purchase_Amount ~ 1, data = df)
+
+# Stepwise selection (both directions) using AIC
+mlr_step <- step(mlr_null,
+                 scope   = list(lower = mlr_null,
+                                upper = mlr_full),
+                 direction = "both",
+                 trace   = 0)
+
+cat("=== Stepwise Selected Model ===\n")
+summary(mlr_step)
+
+cat("\n=== Model Comparison (AIC) ===\n")
+cat("Full model AIC:      ", round(AIC(mlr_full), 2), "\n")
+cat("Stepwise model AIC:  ", round(AIC(mlr_step), 2), "\n")
+cat("Null model AIC:      ", round(AIC(mlr_null), 2), "\n")
+```
+
+```{r variable-importance}
+cat("=== Standardized Coefficients (Variable Importance) ===\n")
+df_scaled <- df %>%
+  mutate(across(c(Browsing_Time, Number_of_Items, Satisfaction_Score, Purchase_Amount),
+                scale))
+
+mlr_std <- lm(Purchase_Amount ~ Browsing_Time + Number_of_Items + Satisfaction_Score,
+              data = df_scaled)
+
+std_coefs <- tibble(
+  Variable = names(coef(mlr_std))[-1],
+  Std_Coef = round(coef(mlr_std)[-1], 4),
+  Abs_Importance = abs(round(coef(mlr_std)[-1], 4))
+) %>%
+  arrange(desc(Abs_Importance))
+
+print(std_coefs)
+```
+
+```{r importance-plot}
+std_coefs %>%
+  ggplot(aes(x = reorder(Variable, Abs_Importance), y = Std_Coef,
+             fill = Std_Coef > 0)) +
+  geom_col(width = 0.5, show.legend = FALSE) +
+  geom_hline(yintercept = 0, linewidth = 0.6) +
+  coord_flip() +
+  scale_fill_manual(values = c("TRUE" = "#2ECC71", "FALSE" = "#E74C3C")) +
+  labs(
+    title    = "Variable Importance: Standardized Regression Coefficients",
+    subtitle = "Larger absolute value = greater importance to Purchase Amount",
+    x = NULL, y = "Standardized Coefficient"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+```{r vif-check}
+cat("=== Variance Inflation Factors (Multicollinearity Check) ===\n")
+print(round(vif(mlr_full), 4))
+```
+
+```{r residual-diagnostics, fig.height=7}
+par(mfrow = c(2, 2), mar = c(4, 4, 3, 1))
+plot(mlr_full, which = 1:4, col = "#3498DB", pch = 16, cex = 0.5)
+par(mfrow = c(1, 1))
+```
+
+```{r final-comparison-table}
+cat("=== Final Model Summary Table ===\n")
+tibble(
+  Model         = c("Null (intercept only)", "Simple Linear (Browsing_Time)",
+                    "Multiple Regression (Full)", "Stepwise Selected"),
+  R_Squared     = c(
+    round(summary(mlr_null)$r.squared, 4),
+    round(summary(lm_simple)$r.squared, 4),
+    round(summary(mlr_full)$r.squared, 4),
+    round(summary(mlr_step)$r.squared, 4)
+  ),
+  Adj_R_Squared = c(
+    round(summary(mlr_null)$adj.r.squared, 4),
+    round(summary(lm_simple)$adj.r.squared, 4),
+    round(summary(mlr_full)$adj.r.squared, 4),
+    round(summary(mlr_step)$adj.r.squared, 4)
+  ),
+  AIC           = c(
+    round(AIC(mlr_null), 2),
+    round(AIC(lm_simple), 2),
+    round(AIC(mlr_full), 2),
+    round(AIC(mlr_step), 2)
+  )
+)
+```
+
+> **Multiple Regression Interpretation:**  
+>
+> - **Browsing_Time:** A unit increase in browsing time corresponds to a β₁ USD change in
+>   Purchase_Amount, holding other variables constant.  
+> - **Number_of_Items:** Each additional item added to the cart is associated with a β₂ USD
+>   change — likely positive (more items → higher total spend).  
+> - **Satisfaction_Score:** Tests whether perceived satisfaction correlates with spending behavior.  
+>
+> **Model Selection:**  
+> Stepwise AIC selection keeps only variables that improve model fit without unnecessary complexity.
+> Variables removed by stepwise selection do not contribute significantly beyond what others already explain.
+>
+> **Variable Importance:**  
+> Standardized coefficients put all predictors on the same scale — the predictor with the
+> largest absolute standardized coefficient contributes most to predicting Purchase_Amount.
+>
+> **Multicollinearity (VIF):**  
+> VIF values below 5 indicate acceptable multicollinearity. Values above 10 signal a
+> problematic correlation between predictors that would inflate standard errors.
+
+---
+
+## Session Info
+
+```{r session-info}
+sessionInfo()
+```
